@@ -1,5 +1,5 @@
 from aiosmtpd.controller import Controller
-from file_manager import MailFile
+from storage_manager import MailFile
 from email.utils import parseaddr
 from typing import List, cast
 from email.parser import BytesParser
