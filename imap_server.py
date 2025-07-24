@@ -1,7 +1,8 @@
 import logging
 import os
 import asyncio
-from typing import List
+import shlex
+# from typing import
 from async_storage import MaildirWrapper
 
 class EnerturkIMAPHandler:
@@ -19,6 +20,7 @@ class EnerturkIMAPHandler:
             
             authenticated_user = None
             selected_folder = None
+            allow_write = False
             buffer = b""
             
             while True:
@@ -46,30 +48,42 @@ class EnerturkIMAPHandler:
                     logging.debug(f"IMAP received: {data}")
                     
                     # Parse command
-                    parts = data.split(' ', 2)
+                    parts = data.split()
                     if len(parts) < 2:
                         writer.write(b"* BAD Invalid command format\r\n")
                         await writer.drain()
                         continue
-                    
                     tag = parts[0]
                     command = parts[1].upper()
-                    args = parts[2] if len(parts) > 2 else ""
+                    args = ' '.join(parts[2:]) if len(parts) > 2 else ""
+
+                    try:
+                        lexer = shlex.shlex(args, posix=True)
+                        lexer.whitespace_split = True
+                        lexer.quotes = '"'
+                        tokens = list(lexer)
+                    except Exception:
+                        writer.write(f"{tag} BAD Invalid argument syntax\r\n".encode())
+                        await writer.drain()
+                        continue
                     
                     response = ""
                     
-                    # Phase 1: Critical Commands
+
                     if command == "CAPABILITY":
                         response = self._handle_capability(tag)
                         
                     elif command == "LOGIN":
-                        response = self._handle_login(tag, args)
-                        if "OK" in response:
-                            # Parse username from LOGIN args (handle quoted strings)
-                            login_parts = self._parse_login_args(args)
-                            if login_parts:
-                                authenticated_user = login_parts[0]
-                                
+                        if authenticated_user:
+                            response = f"{tag} NO [ALREADYAUTHENTICATED] Already authenticated\r\n"
+                        else:
+                            if len(tokens) != 2:
+                                response = f"{tag} BAD Invalid LOGIN command format\r\n" 
+                            else:
+                                response = self._handle_login(tag, tokens[0], tokens[1])
+                                if response.startswith(f"{tag} OK"):
+                                    authenticated_user = tokens[0]
+
                     elif command == "LOGOUT":
                         response = f"* BYE IMAP4rev1 Server logging out\r\n{tag} OK LOGOUT completed\r\n"
                         writer.write(response.encode('utf-8'))
@@ -80,24 +94,35 @@ class EnerturkIMAPHandler:
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            response = await self._handle_select(tag, args, authenticated_user)
-                            if "OK" in response:
-                                selected_folder = self._parse_mailbox_name(args)
+                            if len(tokens) != 1:
+                                response = f"{tag} BAD Invalid mailbox name\r\n"
+                            else:
+                                response = await self._handle_select(tag, tokens[0], authenticated_user)
+                                if response.startswith(f"{tag} OK"):
+                                    selected_folder = tokens[0]
+                                    allow_write = True
                                 
                     elif command == "EXAMINE":
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            response = self._handle_examine(tag, args, authenticated_user)
-                            if "OK" in response:
-                                selected_folder = self._parse_mailbox_name(args)
+                            if len(tokens) != 1:
+                                response = f"{tag} BAD Invalid mailbox name\r\n"
+                            else:
+                                response = await self._handle_examine(tag, tokens[0], authenticated_user)
+                                if response.startswith(f"{tag} OK"):
+                                    selected_folder = tokens[0]
+                                    allow_write = False
                                 
                     elif command == "LIST":
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            response = self._handle_list(tag, args, authenticated_user)
-                            
+                            if len(tokens) != 2:
+                                response = f"{tag} BAD Invalid LIST command format\r\n"
+                            else:
+                                response = self._handle_list(tag, tokens[0], tokens[1], authenticated_user)
+
                     elif command == "FETCH":
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
@@ -111,6 +136,8 @@ class EnerturkIMAPHandler:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         elif not selected_folder:
                             response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
+                        elif not allow_write:
+                            response = f"{tag} NO [READ-ONLY] Cannot store in read-only folder\r\n"
                         else:
                             response = self._handle_store(tag, args, authenticated_user, selected_folder)
                             
@@ -136,7 +163,10 @@ class EnerturkIMAPHandler:
                                 if uid_command == "FETCH":
                                     response = self._handle_uid_fetch(tag, args, authenticated_user, selected_folder)
                                 elif uid_command == "STORE":
-                                    response = self._handle_uid_store(tag, args, authenticated_user, selected_folder)
+                                    if allow_write:
+                                        response = self._handle_uid_store(tag, args, authenticated_user, selected_folder)
+                                    else:
+                                        response = f"{tag} NO [READ-ONLY] Cannot store in read-only folder\r\n"
                                 elif uid_command == "SEARCH":
                                     response = self._handle_uid_search(tag, args, authenticated_user, selected_folder)
                                 else:
@@ -149,6 +179,8 @@ class EnerturkIMAPHandler:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         elif not selected_folder:
                             response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
+                        elif not allow_write:
+                            response = f"{tag} NO [READ-ONLY] Cannot expunge in read-only folder\r\n"
                         else:
                             response = self._handle_expunge(tag, authenticated_user, selected_folder)
                             
@@ -192,117 +224,20 @@ class EnerturkIMAPHandler:
             except:
                 pass
 
-
-    def _parse_login_args(self, args: str) -> list[str] | None:
-        """Parse LOGIN command arguments handling quoted strings"""
-        parts: List[str] = []
-        i = 0
-        args = args.strip()
-        
-        while i < len(args):
-            # Skip whitespace
-            while i < len(args) and args[i] == ' ':
-                i += 1
-            
-            if i >= len(args):
-                break
-                
-            if args[i] == '"':
-                # Quoted string
-                part, new_i = self._parse_quoted_string(args, i)
-                if part is None:
-                    return None  # Malformed quoted string
-                parts.append(part)
-                i = new_i
-            else:
-                # Unquoted string
-                part, new_i = self._parse_string(args, i)
-                parts.append(part)
-                i = new_i
-        
-        return parts if len(parts) >= 2 else None
-
-    def _parse_quoted_string(self, args: str, start: int) -> tuple[str | None, int]:
-        """Parse a quoted string starting at position start"""
-        if args[start] != '"':
-            return None, start
-        
-        result = ""
-        i = start + 1  # Skip opening quote
-        
-        while i < len(args):
-            char = args[i]
-            if char == '"':
-                # End of quoted string
-                return result, i + 1
-            elif char == '\\' and i + 1 < len(args):
-                # Escaped character
-                next_char = args[i + 1]
-                if next_char in '"\\':
-                    result += next_char
-                    i += 2
-                else:
-                    # Invalid escape sequence
-                    return None, i
-            else:
-                result += char
-                i += 1
-        
-        # Unclosed quote
-        return None, i
-
-    def _parse_string(self, args: str, start: int) -> tuple[str, int]:
-        """Parse an unquoted string (no spaces, quotes, or special chars)"""
-        result = ""
-        i = start
-        
-        while i < len(args) and args[i] not in ' "(){}[]':
-            result += args[i]
-            i += 1
-        
-        return result, i
-
-    def _parse_mailbox_name(self, args : str) -> str | None:
-        """Parse mailbox name from command arguments"""
-        args = args.strip()
-        if not args:
-            return "INBOX"
-        elif args.startswith('"') and args.endswith('"'):
-            return args[1:-1]
-        elif len(args.split()) == 1:
-            return args
-        else:
-            return None
-
-    # Placeholder methods for command handlers
     def _handle_capability(self, tag : str) -> str:
-        # Only advertise what's actually implemented
         return f"* CAPABILITY IMAP4rev1\r\n{tag} OK CAPABILITY completed\r\n"
     
     def _authenticate_user(self, username: str, password: str) -> bool:
         """Placeholder for user authentication logic"""
-        # In a real implementation, this would check against a database or other storage
-        return username == "testuser" and password == "testpass"
+        return False
     
-    def _handle_login(self, tag: str, args: str) -> str:
-        parsed_args = self._parse_login_args(args)
-        
-        if not parsed_args:
-            return f"{tag} BAD LOGIN command requires username and password\r\n"
-        
-        username, password = parsed_args[0], parsed_args[1]
-        
-        # Authenticate user
+    def _handle_login(self, tag: str, username: str, password: str) -> str:
         if self._authenticate_user(username, password):
             return f"{tag} OK LOGIN completed\r\n"
         else:
             return f"{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n"
         
-    async def _handle_select(self, tag: str, args: str, user: str) -> str:
-        mailbox_name = self._parse_mailbox_name(args)
-        if not mailbox_name:
-            return f"{tag} BAD Invalid mailbox name\r\n"
-        
+    async def _handle_select(self, tag: str, mailbox_name: str, user: str) -> str:
         dirname = os.path.join(self.base_dir, user, mailbox_name)
         
         # Check if directory exists (quick check)
@@ -340,11 +275,45 @@ class EnerturkIMAPHandler:
         except Exception as e:
             return f"{tag} NO [SERVERFAILURE] Server error: {str(e)}\r\n"
 
-    def _handle_examine(self, tag: str, args: str, user: str) -> str:
-        # Implementation needed (like SELECT but read-only)
-        return f"* 0 EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n* OK [UIDNEXT 1] Predicted next UID\r\n{tag} OK [READ-ONLY] EXAMINE completed\r\n"
+    async def _handle_examine(self, tag: str, mailbox_name: str, user: str) -> str:
+        dirname = os.path.join(self.base_dir, user, mailbox_name)
+        
+        # Check if directory exists (quick check)
+        if not await asyncio.to_thread(os.path.isdir, dirname):
+            return f"{tag} NO [NONMAILBOX] Not a mailbox directory\r\n"
+        
+        try:
+            # Use async UID-aware maildir wrapper
+            mailbox = MaildirWrapper(dirname)
+            
+            # Get mailbox statistics concurrently
+            exists, recent, first_unseen, uidvalidity, uidnext = await asyncio.gather(
+                mailbox.get_message_count(),
+                mailbox.get_recent_count(),
+                mailbox.get_first_unseen_seq(),
+                mailbox.get_uidvalidity(),
+                mailbox.get_uidnext()
+            )
+            
+            # Build response
+            response = f"* {exists} EXISTS\r\n"
+            response += f"* {recent} RECENT\r\n"
+            
+            if first_unseen is not None:
+                response += f"* OK [UNSEEN {first_unseen}] Message {first_unseen} is first unseen\r\n"
+            
+            response += f"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n"
+            response += f"* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n"
+            response += f"* OK [UIDVALIDITY {uidvalidity}] UIDs valid\r\n"
+            response += f"* OK [UIDNEXT {uidnext}] Predicted next UID\r\n"
+            response += f"{tag} OK [READ-WRITE] EXAMINE completed\r\n"
+            
+            return response
+            
+        except Exception as e:
+            return f"{tag} NO [SERVERFAILURE] Server error: {str(e)}\r\n"
 
-    def _handle_list(self, tag: str, args: str, user: str) -> str:
+    def _handle_list(self, tag: str, reference_name: str, mailbox_name: str, user: str) -> str:
         # Implementation needed
         return f'* LIST () "/" INBOX\r\n{tag} OK LIST completed\r\n'
 
