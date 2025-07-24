@@ -8,7 +8,7 @@ from email.utils import parseaddr
 from aiosmtpd.smtp import SMTP, Session, Envelope
 
 
-class EnerturkHandler:
+class EnerturkSMTPHandler:
     # async def handle_MAIL(self, server: SMTP, session: Session, envelope: Envelope, address: str, mail_options: List[str]) -> str:
 
     async def handle_RCPT(
@@ -49,5 +49,5 @@ class EnerturkHandler:
         return '250 Message accepted for delivery'
 
 if __name__ == "__main__":
-    controller = Controller(EnerturkHandler())
+    controller = Controller(EnerturkSMTPHandler())
     controller.start()
