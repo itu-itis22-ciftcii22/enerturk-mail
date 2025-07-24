@@ -1,17 +1,15 @@
 import logging
 import os
-from asyncio import StreamReader, StreamWriter
+import asyncio
 from typing import List
-from mailbox import Maildir
+from async_storage import MaildirWrapper
 
 class EnerturkIMAPHandler:
 
-    def __init__(self, authenticator, mail_storage):
-        self.authenticator = authenticator
-        self.mail_storage = mail_storage
+    def __init__(self):
         self.base_dir = "mails/"
 
-    async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
+    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Handle individual IMAP client connection"""
         logging.info(f"IMAP connection from {writer.get_extra_info('peername')}")
 
@@ -82,7 +80,7 @@ class EnerturkIMAPHandler:
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            response = self._handle_select(tag, args, authenticated_user)
+                            response = await self._handle_select(tag, args, authenticated_user)
                             if "OK" in response:
                                 selected_folder = self._parse_mailbox_name(args)
                                 
@@ -300,33 +298,47 @@ class EnerturkIMAPHandler:
         else:
             return f"{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n"
         
-    def handle_select(self, tag: str, args: str, user: str) -> str:
+    async def _handle_select(self, tag: str, args: str, user: str) -> str:
         mailbox_name = self._parse_mailbox_name(args)
         if not mailbox_name:
             return f"{tag} BAD Invalid mailbox name\r\n"
         
         dirname = os.path.join(self.base_dir, user, mailbox_name)
-
-        if not os.path.isdir(dirname):
+        
+        # Check if directory exists (quick check)
+        if not await asyncio.to_thread(os.path.isdir, dirname):
             return f"{tag} NO [NONMAILBOX] Not a mailbox directory\r\n"
         
-        mailbox = Maildir(dirname, create=True)
-        keys = mailbox.keys()
-        mailbox_recent = Maildir(dirname + "/new", create=True)
-        keys_recent = mailbox_recent.keys()
-        unseen_count = sum(1 for key in keys if "S" not in mailbox.get_flags(key))
-
-
-        response = f"* {len(keys)} EXISTS\r\n"
-        response += f"* {len(keys_recent)} RECENT\r\n"
-        response += f"* OK [UNSEEN {unseen_count}] First unseen\r\n"
-        response += f"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n"
-        response += f"* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n"
-        response += f"{tag} OK [READ-WRITE] SELECT completed\r\n"
-
-    def _handle_select(self, tag: str, args: str, user: str) -> str:
-        # Implementation needed
-        return f"* 0 EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n* OK [UIDNEXT 1] Predicted next UID\r\n{tag} OK [READ-WRITE] SELECT completed\r\n"
+        try:
+            # Use async UID-aware maildir wrapper
+            mailbox = MaildirWrapper(dirname)
+            
+            # Get mailbox statistics concurrently
+            exists, recent, first_unseen, uidvalidity, uidnext = await asyncio.gather(
+                mailbox.get_message_count(),
+                mailbox.get_recent_count(),
+                mailbox.get_first_unseen_seq(),
+                mailbox.get_uidvalidity(),
+                mailbox.get_uidnext()
+            )
+            
+            # Build response
+            response = f"* {exists} EXISTS\r\n"
+            response += f"* {recent} RECENT\r\n"
+            
+            if first_unseen is not None:
+                response += f"* OK [UNSEEN {first_unseen}] Message {first_unseen} is first unseen\r\n"
+            
+            response += f"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n"
+            response += f"* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n"
+            response += f"* OK [UIDVALIDITY {uidvalidity}] UIDs valid\r\n"
+            response += f"* OK [UIDNEXT {uidnext}] Predicted next UID\r\n"
+            response += f"{tag} OK [READ-WRITE] SELECT completed\r\n"
+            
+            return response
+            
+        except Exception as e:
+            return f"{tag} NO [SERVERFAILURE] Server error: {str(e)}\r\n"
 
     def _handle_examine(self, tag: str, args: str, user: str) -> str:
         # Implementation needed (like SELECT but read-only)
