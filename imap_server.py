@@ -2,7 +2,7 @@ import logging
 import os
 import asyncio
 import shlex
-# from typing import
+from typing import List, Tuple
 from async_storage import MaildirWrapper
 
 class EnerturkIMAPHandler:
@@ -48,26 +48,27 @@ class EnerturkIMAPHandler:
                     logging.debug(f"IMAP received: {data}")
                     
                     # Parse command
-                    parts = data.split()
-                    if len(parts) < 2:
-                        writer.write(b"* BAD Invalid command format\r\n")
-                        await writer.drain()
-                        continue
-                    tag = parts[0]
-                    command = parts[1].upper()
-                    args = ' '.join(parts[2:]) if len(parts) > 2 else ""
-
                     try:
-                        lexer = shlex.shlex(args, posix=True)
+                        lexer = shlex.shlex(data, posix=True)
                         lexer.whitespace_split = True
                         lexer.quotes = '"'
                         tokens = list(lexer)
+                        
+                        if len(tokens) < 2:
+                            writer.write(f"* BAD Invalid command format\r\n".encode())
+                            await writer.drain()
+                            continue
+                            
+                        tag = tokens[0]
+                        command = tokens[1].upper()
+                        args = tokens[2:] if len(tokens) > 2 else []
+                        
                     except Exception:
-                        writer.write(f"{tag} BAD Invalid argument syntax\r\n".encode())
+                        writer.write(b"* BAD Invalid argument syntax\r\n")
                         await writer.drain()
                         continue
                     
-                    response = ""
+                    response : str = ""
                     
 
                     if command == "CAPABILITY":
@@ -94,34 +95,34 @@ class EnerturkIMAPHandler:
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            if len(tokens) != 1:
+                            if len(args) != 1:
                                 response = f"{tag} BAD Invalid mailbox name\r\n"
                             else:
-                                response = await self._handle_select(tag, tokens[0], authenticated_user)
+                                response = await self._handle_select(tag, args[0], authenticated_user)
                                 if response.startswith(f"{tag} OK"):
-                                    selected_folder = tokens[0]
+                                    selected_folder = args[0]
                                     allow_write = True
                                 
                     elif command == "EXAMINE":
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            if len(tokens) != 1:
+                            if len(args) != 1:
                                 response = f"{tag} BAD Invalid mailbox name\r\n"
                             else:
-                                response = await self._handle_examine(tag, tokens[0], authenticated_user)
+                                response = await self._handle_examine(tag, args[0], authenticated_user)
                                 if response.startswith(f"{tag} OK"):
-                                    selected_folder = tokens[0]
+                                    selected_folder = args[0]
                                     allow_write = False
                                 
                     elif command == "LIST":
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            if len(tokens) != 2:
+                            if len(args) != 2:
                                 response = f"{tag} BAD Invalid LIST command format\r\n"
                             else:
-                                response = self._handle_list(tag, tokens[0], tokens[1], authenticated_user)
+                                response = await self._handle_list(tag, args[0], args[1], authenticated_user, selected_folder)
 
                     elif command == "FETCH":
                         if not authenticated_user:
@@ -313,9 +314,92 @@ class EnerturkIMAPHandler:
         except Exception as e:
             return f"{tag} NO [SERVERFAILURE] Server error: {str(e)}\r\n"
 
-    def _handle_list(self, tag: str, reference_name: str, mailbox_name: str, user: str) -> str:
-        # Implementation needed
-        return f'* LIST () "/" INBOX\r\n{tag} OK LIST completed\r\n'
+    async def _handle_list(self, tag: str, reference_name: str, mailbox_name: str, user: str, selected_folder: str | None) -> str:
+
+        if ".." in reference_name or ".." in mailbox_name:
+            return f"{tag} NO [NONAUTHENTICATED] Invalid reference name\r\n"
+        
+        base_path = os.path.join(self.base_dir, user)
+
+        if reference_name.startswith("~"):
+            # User-specific path
+            subpath = reference_name[1:]
+            # Security check for path traversal
+            if subpath.startswith("/"):
+                return f"{tag} NO [NONAUTHENTICATED] Invalid reference name\r\n"
+            base_path = os.path.join(base_path, subpath)
+        elif selected_folder is None:
+            # No folder selected, but trying to use relative reference
+            return f"{tag} NO [NOSELECT] No folder selected\r\n"
+        else:
+            if reference_name.startswith("/"):
+                return f"{tag} NO [NONAUTHENTICATED] Invalid reference name\r\n"
+            base_path = os.path.join(base_path, selected_folder, reference_name)
+
+        response = ""
+        
+        if mailbox_name == "":
+            # Return hierarchy delimiter info
+            response += ('* LIST (\\Noselect) "/" ""\r\n')
+        
+        elif mailbox_name.endswith("*"):
+            base_path = os.path.join(base_path, mailbox_name[:-1])
+            
+            # Get all matching folders
+            if not MaildirWrapper.is_maildir(base_path):
+                return f"{tag} NO [NONMAILBOX] Not a mailbox directory\r\n"
+            mailbox = MaildirWrapper(base_path)
+
+            folder_names = mailbox.maildir.list_folders()
+            folder_paths = [os.path.join(base_path, folder) for folder in folder_names]
+            for folder_name, folder_path in zip(folder_names, folder_paths):
+                    dfs_stack : List[Tuple[str, str]] = [(folder_name, folder_path)]
+                    while dfs_stack:
+                        current_folder = dfs_stack.pop(0)
+                        if os.path.isdir(current_folder[1]):
+                            # Check if it's a mailbox directory
+                            if MaildirWrapper.is_maildir(current_folder[1]):
+                                submailbox = MaildirWrapper(current_folder[1])
+                                attributes = await submailbox.get_folder_attributes()
+                                attr_str = " ".join(attributes)
+                                response += f'* LIST ({attr_str}) "/" "{current_folder[0]}"\r\n'
+                                
+                                # Add subfolders to the tree
+                                subfolder_names = submailbox.maildir.list_folders()
+                                subfolder_paths = [os.path.join(current_folder[1], subfolder) for subfolder in subfolder_names]
+                                for subfolder_name, subfolder_path in zip(subfolder_names, subfolder_paths):
+                                    full_subfolder_name = f"{current_folder[0]}/{subfolder_name}"
+                                    dfs_stack.append((full_subfolder_name, subfolder_path))
+
+        elif mailbox_name.endswith("%"):
+            base_path = os.path.join(base_path, mailbox_name[:-1])
+            
+            # Get all matching folders
+            if not MaildirWrapper.is_maildir(base_path):
+                return f"{tag} NO [NONMAILBOX] Not a mailbox directory\r\n"
+            mailbox = MaildirWrapper(base_path)
+
+            folder_names = mailbox.maildir.list_folders()
+            folder_paths = [os.path.join(base_path, folder) for folder in folder_names]
+            for folder_name, folder_path in zip(folder_names, folder_paths):
+                if os.path.isdir(folder_path):
+                    # Check if it's a mailbox directory
+                    if MaildirWrapper.is_maildir(folder_path):
+                        submailbox = MaildirWrapper(folder_path)
+                        attributes = await submailbox.get_folder_attributes()
+                        attr_str = " ".join(attributes)
+                        response += f'* LIST ({attr_str}) "/" "{folder_name}"\r\n'         
+
+        else:
+            if MaildirWrapper.is_maildir(base_path):
+                mailbox = MaildirWrapper(base_path)
+                attributes = await mailbox.get_folder_attributes()
+                attr_str = " ".join(attributes)
+                response += f'* LIST ({attr_str}) "/" "{mailbox_name}"\r\n'
+            else:
+                return f"{tag} NO [NONEXISTENT] Mailbox does not exist\r\n"
+
+        return f'{response}{tag} OK LIST completed\r\n'
 
     def _handle_fetch(self, tag: str, args: str, user: str, folder: str) -> str:
         # Implementation needed

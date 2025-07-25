@@ -4,7 +4,7 @@ import os
 import time
 import aiofiles
 from mailbox import Maildir
-from typing import Dict, Optional, TypedDict
+from typing import Dict, Optional, TypedDict, List
 
 
 class UIDData(TypedDict):
@@ -19,6 +19,12 @@ class MaildirWrapper:
         self.maildir = Maildir(self.path, create=True)
         self.uid_file = os.path.join(path, ".uid_mapping")
         self._uid_data = None
+
+    @staticmethod
+    def is_maildir(path: str) -> bool:
+        """Check if the given path is a valid Maildir directory"""
+        return os.path.isdir(path) and os.path.exists(os.path.join(path, 'cur')) and \
+               os.path.exists(os.path.join(path, 'new')) and os.path.exists(os.path.join(path, 'tmp'))
         
     async def _load_uid_data(self) -> UIDData:
         """Load UID mapping from file asynchronously"""
@@ -129,3 +135,45 @@ class MaildirWrapper:
             return None
         
         return await asyncio.to_thread(find_first_unseen)
+    
+    async def get_folder_attributes(self) -> List[str]:
+        attributes : List[str] = []
+        
+        # \Noselect - folder exists but cannot be selected (no messages)
+        # Check if it's just a hierarchy placeholder
+        if not os.path.exists(os.path.join(self.path, "cur")):
+            attributes.append("\\Noselect")
+        
+        async def has_new_messages(folder_path: str) -> bool:
+            """Check if folder has new/unseen messages"""
+            new_dir = os.path.join(folder_path, "new")
+            try:
+                return len(os.listdir(new_dir)) > 0
+            except OSError:
+                return False
+        # \Marked - folder has been marked as "interesting" 
+        # Usually means it has new messages since last check
+        if await has_new_messages(self.path):
+            attributes.append("\\Marked")
+        else:
+            attributes.append("\\Unmarked")
+        
+
+        async def has_subfolders(folder_path: str) -> bool:
+            """Check if folder has any subfolders"""
+            try:
+                for item in os.listdir(folder_path):
+                    item_path = os.path.join(folder_path, item)
+                    if os.path.isdir(item_path) and item.startswith("."):
+                        return True
+                return False
+            except OSError:
+                return False
+        # \HasChildren / \HasNoChildren (IMAP4rev1 extension)
+        if await has_subfolders(self.path):
+            attributes.append("\\HasChildren")
+        else:
+            attributes.append("\\HasNoChildren")
+        
+        return attributes
+
