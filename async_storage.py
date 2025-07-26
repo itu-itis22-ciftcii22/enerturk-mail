@@ -4,14 +4,14 @@ import os
 import time
 import aiofiles
 from mailbox import Maildir
-from typing import Dict, Optional, TypedDict, List
+from typing import Dict, Optional, TypedDict, List, cast
 
 
 class UIDData(TypedDict):
     uidvalidity: int
     uidnext: int
     key_to_uid: Dict[str, int]
-    uid_to_key: Dict[str, str]
+    uid_to_key: Dict[int, str]
 
 class MaildirWrapper:
     def __init__(self, path: str):
@@ -82,17 +82,18 @@ class MaildirWrapper:
         for key in deleted_keys:
             uid = uid_data['key_to_uid'].pop(key, None)
             if uid:
-                uid_data['uid_to_key'].pop(str(uid), None)
+                uid_data['uid_to_key'].pop(uid, None)
         
         # Add UIDs for new messages
         new_keys = current_keys - mapped_keys
         for key in new_keys:
             uid = uid_data['uidnext']
             uid_data['key_to_uid'][key] = uid
-            uid_data['uid_to_key'][str(uid)] = key
+            uid_data['uid_to_key'][uid] = key
             uid_data['uidnext'] = uid + 1
         
         if deleted_keys or new_keys:
+            self._uid_data = uid_data
             await self._save_uid_data()
     
     async def get_uidvalidity(self) -> int:
@@ -177,3 +178,17 @@ class MaildirWrapper:
         
         return attributes
 
+    async def get_uid_from_key(self, key: str) -> int | None:
+        """Get the UID of a message by its key"""
+        await self._sync_uids()
+        if key in cast(UIDData, self._uid_data)['key_to_uid']:
+            return cast(UIDData, self._uid_data)['key_to_uid'][key]
+        else:
+            return None
+        
+    async def get_key_from_uid(self, uid: int) -> str | None:
+        await self._sync_uids()
+        if uid in cast(UIDData, self._uid_data)['uid_to_key']:
+            return cast(UIDData, self._uid_data)['uid_to_key'][uid]
+        else:
+            return None

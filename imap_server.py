@@ -4,6 +4,7 @@ import asyncio
 import shlex
 from typing import List, Tuple
 from async_storage import MaildirWrapper
+from imap_fetcher import Fetcher
 
 class EnerturkIMAPHandler:
 
@@ -102,6 +103,7 @@ class EnerturkIMAPHandler:
                                 if response.startswith(f"{tag} OK"):
                                     selected_folder = args[0]
                                     allow_write = True
+                                    logging.debug(f"Write state: {allow_write}")
                                 
                     elif command == "EXAMINE":
                         if not authenticated_user:
@@ -114,6 +116,7 @@ class EnerturkIMAPHandler:
                                 if response.startswith(f"{tag} OK"):
                                     selected_folder = args[0]
                                     allow_write = False
+                                    logging.debug(f"Write state: {allow_write}")
                                 
                     elif command == "LIST":
                         if not authenticated_user:
@@ -129,61 +132,21 @@ class EnerturkIMAPHandler:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         elif not selected_folder:
                             response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
+                        elif len(args) < 2:
+                            response = f"{tag} BAD Invalid FETCH command format\r\n"
                         else:
-                            response = self._handle_fetch(tag, args, authenticated_user, selected_folder)
+                            response = await self._handle_fetch(tag, args[0], " ".join(args[1:-1]), authenticated_user, selected_folder)
                             
-                    elif command == "STORE":
+                    elif command == ("UID FETCH"):
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         elif not selected_folder:
                             response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
-                        elif not allow_write:
-                            response = f"{tag} NO [READ-ONLY] Cannot store in read-only folder\r\n"
+                        elif len(args) != 2:
+                            response = f"{tag} BAD Invalid UID FETCH command format\r\n"
                         else:
-                            response = self._handle_store(tag, args, authenticated_user, selected_folder)
-                            
-                    # Phase 2: Essential Commands
-                    elif command == "SEARCH":
-                        if not authenticated_user:
-                            response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
-                        elif not selected_folder:
-                            response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
-                        else:
-                            response = self._handle_search(tag, args, authenticated_user, selected_folder)
-                            
-                    elif command.startswith("UID"):
-                        if not authenticated_user:
-                            response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
-                        elif not selected_folder:
-                            response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
-                        else:
-                            # Handle UID FETCH, UID STORE, UID SEARCH
-                            uid_parts = command.split(' ', 1)
-                            if len(uid_parts) > 1:
-                                uid_command = uid_parts[1].upper()
-                                if uid_command == "FETCH":
-                                    response = self._handle_uid_fetch(tag, args, authenticated_user, selected_folder)
-                                elif uid_command == "STORE":
-                                    if allow_write:
-                                        response = self._handle_uid_store(tag, args, authenticated_user, selected_folder)
-                                    else:
-                                        response = f"{tag} NO [READ-ONLY] Cannot store in read-only folder\r\n"
-                                elif uid_command == "SEARCH":
-                                    response = self._handle_uid_search(tag, args, authenticated_user, selected_folder)
-                                else:
-                                    response = f"{tag} BAD Invalid UID command\r\n"
-                            else:
-                                response = f"{tag} BAD UID command requires subcommand\r\n"
-                                
-                    elif command == "EXPUNGE":
-                        if not authenticated_user:
-                            response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
-                        elif not selected_folder:
-                            response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
-                        elif not allow_write:
-                            response = f"{tag} NO [READ-ONLY] Cannot expunge in read-only folder\r\n"
-                        else:
-                            response = self._handle_expunge(tag, authenticated_user, selected_folder)
+                            # Extract UID and data items
+                            response = await self._handle_fetch(tag, args[0], " ".join(args[1:-1]), authenticated_user, selected_folder)
                             
                     elif command == "CLOSE":
                         if not authenticated_user:
@@ -191,7 +154,7 @@ class EnerturkIMAPHandler:
                         elif not selected_folder:
                             response = f"{tag} NO [CLIENTBUG] No folder selected\r\n"
                         else:
-                            response = self._handle_close(tag, authenticated_user, selected_folder)
+                            response = f"{tag} OK - close completed, now in authenticated state"
                             selected_folder = None  # Return to authenticated state
                             
                     elif command == "STATUS":
@@ -401,37 +364,126 @@ class EnerturkIMAPHandler:
 
         return f'{response}{tag} OK LIST completed\r\n'
 
-    def _handle_fetch(self, tag: str, args: str, user: str, folder: str) -> str:
-        # Implementation needed
-        return f"{tag} OK FETCH completed\r\n"
+    async def _handle_fetch(self, tag: str, sequences: str, item_names: str, user: str, selected_folder: str) -> str:
+        # Handle sequence range parsing
+        if ':' in sequences:
+            start_seq, end_seq = map(int, sequences.split(':'))
+            seq_list = range(start_seq, end_seq + 1)
+        else:
+            seq_list = [int(sequences)]
+        
+        # Remove parentheses if present
+        if item_names.startswith('(') and item_names.endswith(')'):
+            item_names = item_names[1:-1]
+        
+        # Split into individual items
+        items = item_names.split()
 
-    def _handle_store(self, tag: str, args: str, user: str, folder: str) -> str:
-        # Implementation needed
-        return f"{tag} OK STORE completed\r\n"
+        dirname = os.path.join(self.base_dir, user, selected_folder)
+        mailbox = MaildirWrapper(dirname)
+        message_keys = mailbox.maildir.keys()
+        message_uid_key_pairs : List[Tuple[int, str]] = []
+        for key in message_keys:
+            uid = await mailbox.get_uid_from_key(key)
+            if uid is not None:
+                message_uid_key_pairs.append((uid, key))
+        message_uid_key_pairs = sorted(message_uid_key_pairs, key=lambda pair: pair[0])
 
-    def _handle_search(self, tag: str, args: str, user: str, folder: str) -> str:
-        # Implementation needed
-        return f"* SEARCH\r\n{tag} OK SEARCH completed\r\n"
+        # Macro expansions
+        MACROS = {
+            'ALL': ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE', 'ENVELOPE'],
+            'FAST': ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE'],
+            'FULL': ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE', 'ENVELOPE', 'BODY']
+        }
+        
+        # Handle single macro (must be alone)
+        if len(items) == 1 and items[0].upper() in MACROS:
+            items = MACROS[items[0].upper()]
 
-    def _handle_uid_fetch(self, tag: str, args: str, user: str, folder: str) -> str:
-        # Implementation needed
-        return f"{tag} OK UID FETCH completed\r\n"
+        fetcher = Fetcher()
+        response = ""
+        
+        for seq in seq_list:
+            # Convert 1-based sequence to 0-based index
+            if seq < 1 or seq > len(message_uid_key_pairs):
+                continue  # Skip invalid sequence numbers
+            
+            index = seq - 1  # Convert to 0-based index
 
-    def _handle_uid_store(self, tag: str, args: str, user: str, folder: str) -> str:
-        # Implementation needed
-        return f"{tag} OK UID STORE completed\r\n"
+            message = mailbox.maildir.get_message(message_uid_key_pairs[index][1])
+            
+            # Build fetch items response
+            fetch_items : List[str] = []
+            for item in items:
+                fetch_items.append(fetcher.handle_fetch_item(item, message))
+            
+            # Format response properly
+            if len(fetch_items) == 1:
+                response += f"* {seq} FETCH {fetch_items[0]}\r\n"
+            else:
+                response += f"* {seq} FETCH ({' '.join(fetch_items)})\r\n"
 
-    def _handle_uid_search(self, tag: str, args: str, user: str, folder: str) -> str:
-        # Implementation needed
-        return f"* SEARCH\r\n{tag} OK UID SEARCH completed\r\n"
+        response += f"{tag} OK FETCH completed\r\n"
+        return response
 
-    def _handle_expunge(self, tag: str, user: str, folder: str) -> str:
-        # Implementation needed
-        return f"{tag} OK EXPUNGE completed\r\n"
+    async def _handle_uid_fetch(self, tag: str, uids: str, item_names: str, user: str, selected_folder: str) -> str:
+        # Handle UID range parsing
+        if ':' in uids:
+            start_uid, end_uid = map(int, uids.split(':'))
+            uid_list = range(start_uid, end_uid + 1)
+        else:
+            uid_list = [int(uids)]
+        
+        # Remove parentheses if present
+        if item_names.startswith('(') and item_names.endswith(')'):
+            item_names = item_names[1:-1]
+        
+        # Split into individual items
+        items = item_names.split()
 
-    def _handle_close(self, tag: str, user: str, folder: str) -> str:
-        # Implementation needed (expunge + close)
-        return f"{tag} OK CLOSE completed\r\n"
+        dirname = os.path.join(self.base_dir, user, selected_folder)
+        mailbox = MaildirWrapper(dirname)
+        
+        # Macro expansions
+        MACROS = {
+            'ALL': ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE', 'ENVELOPE'],
+            'FAST': ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE'],
+            'FULL': ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE', 'ENVELOPE', 'BODY']
+        }
+        
+        # Handle single macro (must be alone)
+        if len(items) == 1 and items[0].upper() in MACROS:
+            items = MACROS[items[0].upper()]
+
+        fetcher = Fetcher()
+        response = ""
+        
+        for uid in uid_list:
+            try:
+                # Get key for this specific UID
+                key = await mailbox.get_key_from_uid(uid)
+                if key is None:
+                    continue  # Skip UIDs that don't exist
+                
+                message = mailbox.maildir.get_message(key)
+                
+                # Build fetch items response
+                fetch_items: List[str] = []
+                for item in items:
+                    fetch_items.append(fetcher.handle_fetch_item(item, message))
+                
+                # Format response properly - note that UID FETCH responses include the UID
+                if len(fetch_items) == 1:
+                    response += f"* {uid} FETCH (UID {uid} {fetch_items[0]})\r\n"
+                else:
+                    response += f"* {uid} FETCH (UID {uid} {' '.join(fetch_items)})\r\n"
+                    
+            except Exception:
+                # Skip UIDs that cause errors (e.g., don't exist)
+                continue
+
+        response += f"{tag} OK UID FETCH completed\r\n"
+        return response
 
     def _handle_status(self, tag: str, args: str, user: str) -> str:
         # Implementation needed
