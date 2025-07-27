@@ -10,8 +10,9 @@ class EnerturkIMAPHandler:
 
     def __init__(self):
         self.base_dir = "mails/"
+        self.users = {"testuser": "password123"}  # Placeholder user credentials
 
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Handle individual IMAP client connection"""
         logging.info(f"IMAP connection from {writer.get_extra_info('peername')}")
 
@@ -161,7 +162,8 @@ class EnerturkIMAPHandler:
                         if not authenticated_user:
                             response = f"{tag} NO [AUTHENTICATIONFAILED] Not authenticated\r\n"
                         else:
-                            response = self._handle_status(tag, args, authenticated_user)
+                            response = f"* STATUS INBOX (MESSAGES 0 RECENT 0 UIDNEXT 1 UIDVALIDITY 1 UNSEEN 0)\r\n{tag} OK STATUS completed\r\n"
+                            #response = self._handle_status(tag, args, authenticated_user)
                             
                     # Unrecognized commands
                     else:
@@ -192,8 +194,8 @@ class EnerturkIMAPHandler:
         return f"* CAPABILITY IMAP4rev1\r\n{tag} OK CAPABILITY completed\r\n"
     
     def _authenticate_user(self, username: str, password: str) -> bool:
-        """Placeholder for user authentication logic"""
-        return False
+        """Authenticate user with a simple placeholder mechanism"""
+        return self.users.get(username) == password
     
     def _handle_login(self, tag: str, username: str, password: str) -> str:
         if self._authenticate_user(username, password):
@@ -203,15 +205,15 @@ class EnerturkIMAPHandler:
         
     async def _handle_select(self, tag: str, mailbox_name: str, user: str) -> str:
         dirname = os.path.join(self.base_dir, user, mailbox_name)
-        
+
         # Check if directory exists (quick check)
         if not await asyncio.to_thread(os.path.isdir, dirname):
             return f"{tag} NO [NONMAILBOX] Not a mailbox directory\r\n"
-        
+
         try:
             # Use async UID-aware maildir wrapper
             mailbox = MaildirWrapper(dirname)
-            
+
             # Get mailbox statistics concurrently
             exists, recent, first_unseen, uidvalidity, uidnext = await asyncio.gather(
                 mailbox.get_message_count(),
@@ -220,22 +222,22 @@ class EnerturkIMAPHandler:
                 mailbox.get_uidvalidity(),
                 mailbox.get_uidnext()
             )
-            
+
             # Build response
             response = f"* {exists} EXISTS\r\n"
             response += f"* {recent} RECENT\r\n"
-            
+
             if first_unseen is not None:
                 response += f"* OK [UNSEEN {first_unseen}] Message {first_unseen} is first unseen\r\n"
-            
+
             response += f"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n"
             response += f"* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n"
             response += f"* OK [UIDVALIDITY {uidvalidity}] UIDs valid\r\n"
             response += f"* OK [UIDNEXT {uidnext}] Predicted next UID\r\n"
             response += f"{tag} OK [READ-WRITE] SELECT completed\r\n"
-            
+
             return response
-            
+
         except Exception as e:
             return f"{tag} NO [SERVERFAILURE] Server error: {str(e)}\r\n"
 
@@ -278,10 +280,9 @@ class EnerturkIMAPHandler:
             return f"{tag} NO [SERVERFAILURE] Server error: {str(e)}\r\n"
 
     async def _handle_list(self, tag: str, reference_name: str, mailbox_name: str, user: str, selected_folder: str | None) -> str:
-
         if ".." in reference_name or ".." in mailbox_name:
             return f"{tag} NO [NONAUTHENTICATED] Invalid reference name\r\n"
-        
+
         base_path = os.path.join(self.base_dir, user)
 
         if reference_name.startswith("~"):
@@ -300,43 +301,44 @@ class EnerturkIMAPHandler:
             base_path = os.path.join(base_path, selected_folder, reference_name)
 
         response = ""
-        
+
         if mailbox_name == "":
             # Return hierarchy delimiter info
             response += ('* LIST (\\Noselect) "/" ""\r\n')
-        
+
         elif mailbox_name.endswith("*"):
             base_path = os.path.join(base_path, mailbox_name[:-1])
-            
+
             # Get all matching folders
             if not MaildirWrapper.is_maildir(base_path):
                 return f"{tag} NO [NONMAILBOX] Not a mailbox directory\r\n"
+
             mailbox = MaildirWrapper(base_path)
 
             folder_names = mailbox.maildir.list_folders()
             folder_paths = [os.path.join(base_path, folder) for folder in folder_names]
             for folder_name, folder_path in zip(folder_names, folder_paths):
-                    dfs_stack : List[Tuple[str, str]] = [(folder_name, folder_path)]
-                    while dfs_stack:
-                        current_folder = dfs_stack.pop(0)
-                        if os.path.isdir(current_folder[1]):
-                            # Check if it's a mailbox directory
-                            if MaildirWrapper.is_maildir(current_folder[1]):
-                                submailbox = MaildirWrapper(current_folder[1])
-                                attributes = await submailbox.get_folder_attributes()
-                                attr_str = " ".join(attributes)
-                                response += f'* LIST ({attr_str}) "/" "{current_folder[0]}"\r\n'
-                                
-                                # Add subfolders to the tree
-                                subfolder_names = submailbox.maildir.list_folders()
-                                subfolder_paths = [os.path.join(current_folder[1], subfolder) for subfolder in subfolder_names]
-                                for subfolder_name, subfolder_path in zip(subfolder_names, subfolder_paths):
-                                    full_subfolder_name = f"{current_folder[0]}/{subfolder_name}"
-                                    dfs_stack.append((full_subfolder_name, subfolder_path))
+                dfs_stack: List[Tuple[str, str]] = [(folder_name, folder_path)]
+                while dfs_stack:
+                    current_folder_name, current_folder_path = dfs_stack.pop()
+                    if os.path.isdir(current_folder_path):
+                        # Check if it's a mailbox directory
+                        if MaildirWrapper.is_maildir(current_folder_path):
+                            submailbox = MaildirWrapper(current_folder_path)
+                            attributes = await submailbox.get_folder_attributes()
+                            attr_str = " ".join(attributes)
+                            response += f'* LIST ({attr_str}) "/" "{current_folder_name}"\r\n'
+
+                            # Add subfolders to the tree
+                            subfolder_names = submailbox.maildir.list_folders()
+                            subfolder_paths = [os.path.join(current_folder_path, subfolder) for subfolder in subfolder_names]
+                            for subfolder_name, subfolder_path in zip(subfolder_names, subfolder_paths):
+                                full_subfolder_name = f"{current_folder_name}/{subfolder_name}"
+                                dfs_stack.append((full_subfolder_name, subfolder_path))
 
         elif mailbox_name.endswith("%"):
             base_path = os.path.join(base_path, mailbox_name[:-1])
-            
+
             # Get all matching folders
             if not MaildirWrapper.is_maildir(base_path):
                 return f"{tag} NO [NONMAILBOX] Not a mailbox directory\r\n"
@@ -351,7 +353,7 @@ class EnerturkIMAPHandler:
                         submailbox = MaildirWrapper(folder_path)
                         attributes = await submailbox.get_folder_attributes()
                         attr_str = " ".join(attributes)
-                        response += f'* LIST ({attr_str}) "/" "{folder_name}"\r\n'         
+                        response += f'* LIST ({attr_str}) "/" "{folder_name}"\r\n'
 
         else:
             if MaildirWrapper.is_maildir(base_path):
