@@ -27,7 +27,7 @@ def send_email():
 def fetch_email():
     with imaplib.IMAP4(IMAP_HOST, IMAP_PORT) as client:
         client.login(USERNAME, PASSWORD)
-        client.select("Inbox")
+        client.select("INBOX")
         status, messages = client.search(None, "ALL")
 
         if status != "OK":

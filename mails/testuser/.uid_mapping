@@ -1,0 +1,26 @@
+{
+  "folders": {
+    "Sent": {
+      "uidvalidity": 1753661491,
+      "uidnext": 2,
+      "key_to_uid": {
+        "1753661212.M567917P25572Q1.DESKTOP-QJHBE89": 1
+      },
+      "uid_to_key": {
+        "1": "1753661212.M567917P25572Q1.DESKTOP-QJHBE89"
+      }
+    },
+    "INBOX": {
+      "uidvalidity": 1753661722,
+      "uidnext": 1,
+      "key_to_uid": {},
+      "uid_to_key": {}
+    },
+    "Trash": {
+      "uidvalidity": 1753662486,
+      "uidnext": 1,
+      "key_to_uid": {},
+      "uid_to_key": {}
+    }
+  }
+}
