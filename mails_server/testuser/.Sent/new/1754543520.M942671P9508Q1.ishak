@@ -1,0 +1,15 @@
+Content-Type: multipart/mixed; boundary="===============0320389431312892122=="
+MIME-Version: 1.0
+From: testuser@localhost
+To: testuser@localhost
+Subject: test
+Date: Thu, 07 Aug 2025 08:12:00 +0300
+Message-ID: <175454352093.9508.1129529004198311875@localhost>
+
+--===============0320389431312892122==
+Content-Type: text/plain; charset="us-ascii"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+
+testbody
+--===============0320389431312892122==--

@@ -20,6 +20,14 @@ class UIDData(TypedDict):
 class MaildirWrapper:
     def __init__(self, mailbox_path: str, folder_name: Optional[str] = None, create: bool = False):
         self.base_path = mailbox_path
+
+        # 1) Ensure the full maildir layout for the base path
+        if create:
+            # make mailbox_path, mailbox_path/cur, /new, /tmp
+            for sub in ("cur", "new", "tmp"):
+                os.makedirs(os.path.join(mailbox_path, sub), exist_ok=True)
+
+        # 2) Now instantiate the std-lib Maildir
         base_maildir = Maildir(mailbox_path, create=create)
         
         if folder_name:
@@ -28,7 +36,15 @@ class MaildirWrapper:
             current = base_maildir
             for part in parts:
                 if create:
-                    current = current.add_folder(part)
+                     # instead of current.add_folder(), recreate full layout
+                    folder_path = os.path.join(current._path, "." + part)
+                    # bootstrap layout for the sub-folder
+                    for sub in ("cur", "new", "tmp"):
+                        os.makedirs(os.path.join(folder_path, sub), exist_ok=True)
+                    # maildirfolder marker
+                    os.makedirs(folder_path, exist_ok=True)
+                    open(os.path.join(folder_path, "maildirfolder"), "a").close()
+                    current = Maildir(folder_path, create=True)
                 else:
                     try:
                         current = current.get_folder(part)
@@ -44,6 +60,12 @@ class MaildirWrapper:
         self.uid_file = os.path.join(self.base_path, ".uid_mapping")
         self._uid_data = None
         self._lock = threading.RLock()
+
+    @classmethod
+    async def create_mailbox(cls, mailbox_path: str):
+        instance = cls(mailbox_path, "", True)
+        await instance._sync_uids()
+        return instance
 
     @property
     def path(self) -> str:
@@ -247,10 +269,6 @@ class MaildirWrapper:
     async def get_folder_attributes(self) -> List[str]:
         attributes: List[str] = []
 
-        # \Noselect - folder exists but cannot be selected (no messages)
-        if not os.path.exists(os.path.join(self.path, "cur")):
-            attributes.append("\\Noselect")
-
         async def has_new_messages(folder_path: str) -> bool:
             """Check if folder has new/unseen messages"""
             new_dir = os.path.join(folder_path, "new")
@@ -265,22 +283,9 @@ class MaildirWrapper:
         else:
             attributes.append("\\Unmarked")
 
-        async def has_subfolders(folder_path: str) -> bool:
-            """Check if folder has any subfolders"""
-            try:
-                for item in os.listdir(folder_path):
-                    item_path = os.path.join(folder_path, item)
-                    if os.path.isdir(item_path) and item.startswith("."):
-                        return True
-                return False
-            except OSError:
-                return False
-
         # \HasChildren / \HasNoChildren (IMAP4rev1 extension)
-        if await has_subfolders(self.path):
-            attributes.append("\\HasChildren")
-        else:
-            attributes.append("\\HasNoChildren")
+        if len(self.maildir.list_folders()) == 0:
+            attributes.append("\\Noinferiors")
 
         return attributes
 

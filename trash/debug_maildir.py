@@ -2,7 +2,7 @@
 """Debug script to test Maildir functionality"""
 
 import os
-from async_storage import MaildirWrapper
+from server.storage_manager import MaildirWrapper
 from config import BASE_DIR, USERNAME
 
 def main():

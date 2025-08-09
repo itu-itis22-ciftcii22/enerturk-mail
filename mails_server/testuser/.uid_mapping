@@ -1,0 +1,22 @@
+{
+  "folders": {
+    "Sent": {
+      "uidvalidity": 1754544088,
+      "uidnext": 3,
+      "key_to_uid": {
+        "1754543520.M942671P9508Q1.ishak": 1,
+        "1754551908.M208061P17952Q1.ishak": 2
+      },
+      "uid_to_key": {
+        "1": "1754543520.M942671P9508Q1.ishak",
+        "2": "1754551908.M208061P17952Q1.ishak"
+      }
+    },
+    "INBOX": {
+      "uidvalidity": 1754552716,
+      "uidnext": 1,
+      "key_to_uid": {},
+      "uid_to_key": {}
+    }
+  }
+}
