@@ -5,10 +5,10 @@ import base64
 import ssl
 import shlex
 from typing import List, Tuple, Optional, Union
-from storage_manager import MaildirWrapper
-from imap_fetcher import Fetcher
+from server.storage_manager import MaildirWrapper
+from server.imap_fetcher import Fetcher
 from mailbox import MaildirMessage
-from authenticator import LDAPAuthenticator
+from server.authenticator import LDAPAuthenticator
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')

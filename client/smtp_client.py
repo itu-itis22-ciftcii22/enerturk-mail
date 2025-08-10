@@ -2,20 +2,23 @@ import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
-from config import HOST_NAME, SMTP_PORT, setup_logging
-setup_logging()
+from config_reader import ConfigLoader
+if len(sys.argv) > 1:
+    configs = ConfigLoader(sys.argv[1])
+else:
+    configs = ConfigLoader()
+
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from getpass import getpass
 
 if __name__ == "__main__":
-    #username = input("Enter email username: ")
-    #password = getpass.getpass("Enter email password: ")
-    username = "testuser@localhost"
-    password = "testpassword"
+    username = input("Enter email username: ")
+    password = getpass("Enter email password: ")
     try:
         # Connect to the SMTP server
-        with smtplib.SMTP(HOST_NAME, SMTP_PORT) as server:
+        with smtplib.SMTP(configs.host_name, configs.smtp_port, timeout=10) as server:
             server.starttls()  # Upgrade the connection to a secure encrypted SSL/TLS connection
             server.login(username, password)  # Log in to the server
             to_email = input("Enter recipient email: ")

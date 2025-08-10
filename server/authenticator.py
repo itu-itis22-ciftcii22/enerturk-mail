@@ -2,9 +2,9 @@ import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
-import config
+from config_reader import ConfigLoader
 import logging
-from ldap3 import Server, Connection, ALL, NTLM, SIMPLE
+from ldap3 import Server, Connection, ALL, SIMPLE
 
 class LDAPAuthenticator:
     def __init__(self, auth_type: str):
@@ -12,11 +12,12 @@ class LDAPAuthenticator:
         
         # LDAP settings (only loaded if needed)
         if self.auth_type == 'ldap':
-            self.server_uri = config.LDAP_SERVER_URI
-            self.domain = config.LDAP_DOMAIN
-            self.base_dn = config.LDAP_BASE_DN
-            self.use_ssl = getattr(config, 'LDAP_USE_SSL', False)
-            self.port = getattr(config, 'LDAP_PORT', 389)
+            configs = ConfigLoader()
+            self.server_uri = configs.ldap_server_uri
+            self.domain = configs.ldap_domain
+            self.base_dn = configs.ldap_base_dn
+            self.use_ssl = configs.ldap_use_ssl
+            self.port = configs.ldap_port
         else:
             self.users = {"testuser@localhost": "testpassword"}
     
@@ -38,17 +39,19 @@ class LDAPAuthenticator:
             )
             
             user_formats = [
-                f"{self.domain}\\{username}",
-                f"{username}@{self.domain.lower()}.com",
-                username
+                f"{username}@{self.domain}",  # UPN format (most reliable for AD)
+                f"CN={username},CN=Users,DC=test,DC=local",  # Full DN format
+                f"{self.domain}\\{username}",  # Domain\username format
+                username  # Simple username
             ]
+        
             
             for user_dn in user_formats:
                 with Connection(
                         server,
                         user=user_dn,
                         password=password,
-                        authentication=NTLM if '\\' in user_dn else SIMPLE,
+                        authentication=SIMPLE,
                         auto_bind=True
                     ) as conn:
                     if conn.bound:

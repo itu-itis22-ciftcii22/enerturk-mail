@@ -1,0 +1,26 @@
+{
+    "server": {
+        "host_name": "test.local",
+        "smtp_port": 8025,
+        "imap_port": 8143
+    },
+    "storage": {
+        "server_storage_path": "mails_server",
+        "client_storage_path": "mails_client"
+    },
+    "authentication": {
+        "auth_type": "ldap",
+        "ldap_server_uri": "ldap://test.local:389",
+        "ldap_domain": "test.local",
+        "ldap_base_dn": "DC=test,DC=local",
+        "ldap_bind_dn": "CN=Administrator,CN=Users,DC=test,DC=local",
+        "ldap_bind_password": "sifre.1",
+        "ldap_port": 389,
+        "ldap_use_ssl": false
+    },
+    "logging": {
+        "log_level": "DEBUG",
+        "log_format": "%(asctime)s - %(levelname)s - %(message)s",
+        "log_file": "email_client.log"
+    }
+}

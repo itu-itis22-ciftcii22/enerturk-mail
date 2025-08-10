@@ -1,5 +1,5 @@
 from aiosmtpd.smtp import AuthResult, LoginPassword
-from storage_manager import MaildirWrapper
+from server.storage_manager import MaildirWrapper
 from email.utils import parseaddr, formatdate, make_msgid
 from typing import List, cast, Any
 from email.parser import BytesParser
@@ -7,7 +7,7 @@ from email.policy import default
 from email.utils import parseaddr
 from aiosmtpd.smtp import SMTP, Session, Envelope
 from mailbox import MaildirMessage
-from authenticator import LDAPAuthenticator
+from server.authenticator import LDAPAuthenticator
 import os
 import logging
 
@@ -139,7 +139,7 @@ class SMTPHandler:
             recipient_name = recipient_address.split("@")[0]
             if recipient_name == sender_name:
                 continue
-            mailbox = await MaildirWrapper.create_mailbox(os.path.join(self.mail_dir, sender_name))
+            mailbox = await MaildirWrapper.create_mailbox(os.path.join(self.mail_dir, recipient_name))
             inbox_wrapper = MaildirWrapper(mailbox.base_path, create=True)
             await inbox_wrapper.save_message(maildir_msg)
 

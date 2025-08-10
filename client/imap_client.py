@@ -2,8 +2,12 @@ import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
-from config import HOST_NAME, IMAP_PORT, CLIENT_STORAGE_PATH, setup_logging
-setup_logging()
+from config_reader import ConfigLoader
+if len(sys.argv) > 1:
+    configs = ConfigLoader(sys.argv[1])
+else:
+    configs = ConfigLoader()
+
 import imaplib
 import email
 import os
@@ -11,6 +15,7 @@ import ssl
 import logging
 from email import policy
 from typing import List, Tuple
+from getpass import getpass
 
 def list_mailboxes(imap: imaplib.IMAP4) -> List[str]:
     """List all available mailboxes/folders."""
@@ -130,27 +135,26 @@ def authenticate_plain(imap: imaplib.IMAP4, username: str, password: str) -> Tup
     return imap.authenticate('PLAIN', lambda x: auth_bytes)
 
 def main():
-    #username = input("Enter email username: ")
-    #password = getpass.getpass("Enter email password: ")
-    username = "testuser@localhost"
-    password = "testpassword"
+    username = input("Enter email username: ")
+    password = getpass("Enter email password: ")
     
-    local_dir = os.path.join(os.getcwd(), CLIENT_STORAGE_PATH, username)
+    local_dir = os.path.join(
+        configs.client_storage_path, username)
     os.makedirs(local_dir, exist_ok=True)
     
-    logging.info(f"Connecting to IMAP server at {HOST_NAME}:{IMAP_PORT}...")
+    logging.info(f"Connecting to IMAP server at {configs.host_name}:{configs.imap_port}...")
     
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        imap = imaplib.IMAP4_SSL(HOST_NAME, IMAP_PORT, ssl_context=context)
+        imap = imaplib.IMAP4_SSL(configs.host_name, configs.imap_port, ssl_context=context)
         logging.info("Connected using SSL/TLS")
     except Exception as e:
         logging.warning(f"SSL connection failed: {e}")
         logging.info("Trying plain connection...")
         try:
-            imap = imaplib.IMAP4(HOST_NAME, IMAP_PORT)
+            imap = imaplib.IMAP4(configs.host_name, configs.imap_port, timeout=10)
             try:
                 imap.starttls()
                 logging.info("Upgraded to TLS connection")
